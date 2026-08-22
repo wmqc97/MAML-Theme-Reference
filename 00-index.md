@@ -61,3 +61,7 @@
 - **语法来源**：小米官方 MAML 文档（zhuti.designer.xiaomi.com）及社区镜像（github.com/tofrankie/miui-maml）
 - **收录范围**：仅收纳官方语法与已验证可过审的写法，不包含车控主题（car_model）相关内容
 - **许可证**：MIT License
+
+| 编号 | 文件 | 内容 |
+|------|------|------|
+| 01 | [REARStore_提交参考文档.md](practical/REARStore_提交参考文档.md) | REARStore 主题提交规范（widget_info.json 与 var_config.xml） |
