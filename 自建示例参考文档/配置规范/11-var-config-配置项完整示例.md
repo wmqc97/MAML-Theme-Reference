@@ -268,3 +268,48 @@
 4. **Color 的 `<item>`** 第一个为默认值
 5. **WidgetConfig 不再写 `author`/`name`**，只保留 `description="可调配置变量"`
 6. **配置项命名**用驼峰或下划线，避免中文
+
+---
+
+## 六、作者信息条（推荐 Text 只读，备用 OnOff）
+
+var_config 无专用纯文本控件，作者+Q群展示两方案（v1.8 跑通）：
+
+**A. Text 只读（推荐，无开关）**：
+```xml
+<Text name="author_info" displayTitle="✦ 唯梦倾城 ✦" editable="false" maxLength="30" minLength="0">
+  <Language displayTitle="✦ 唯夢傾城 ✦" locale="zh_TW"/>
+  <Language displayTitle="✦ Mengqingcheng ✦" locale="en_US"/>
+  <item>Q群 2159063054</item>
+</Text>
+```
+
+**B. OnOff 信息行（备用）**：
+```xml
+<OnOff name="author_info" displayTitle="✦ 唯梦倾城 · Q群 2159063054 ✦" default="1">
+  <Language displayTitle="✦ 唯夢傾城 · Q群 2159063054 ✦" locale="zh_TW"/>
+  <Language displayTitle="✦ Mengqingcheng · QQ Group 2159063054 ✦" locale="en_US"/>
+</OnOff>
+```
+
+常量：作者 `唯梦倾城`、Q群 `2159063054`。详见 14 号规范与 06 号第五节。
+
+---
+
+## 七、官方新控件（2026-09-12 系统主题实测）
+
+**CustomColor（主题色选择器）**：
+```xml
+<CustomColor name="colorPicker" displayTitle="选择主题色" default="#8ED2CD" index="0">
+  <item>auto</item>        <!-- 第一项可为 auto（自动色） -->
+  <item>#8ED2CD</item>
+  <item>#AAD1FF</item>
+</CustomColor>
+```
+引用：`@colorPicker`（字符串）；可用 strToLowerCase + eqs 映射索引。
+
+**AnimatVar（官方模型动画变量）**：`<AnimatVar name="aniVar" x="0" y="0" scaleX="0" scaleY="0" displayScale="1"/>`
+
+**增强属性**：Text 加 `hint="占位提示"` + `<HintLanguage/>`；OnOff/Text 加 `group="N"` 分组；MultiImageSelect item 加 `contentDescription` 与 `valueDark`（深色预览图）。
+
+详见 16 号第四节。
