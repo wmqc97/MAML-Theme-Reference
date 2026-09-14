@@ -890,3 +890,178 @@ setInterval(function(){ if($('#aod').classList.contains('show')) aodRefresh(); }
 - 反编译确认：`RearAppLaunchService.handleLaunchAppOnRearIntent` 检查 `rootReady`/`shizukuGranted`，无特权则「skip rear launch」
 
 **结论**：主题内唤起应用优先用 **`<WebView>` 内 `<Triggers>` + `doAction`**，最简单可靠，不依赖 MiRoot 特权通道。
+
+---
+
+## 九、MAML WebView 框架深挖（2026-09-14 反编译 subscreen.apk v426082119 实证）
+
+> 反编译对象：`com.xiaomi.subscreencenter`（背屏中心，内置 MAML SDK），核心类：
+> `Lcom/miui/maml/elements/WebViewScreenElement`、`Lcom/miui/maml/elements/web/MamlWebView`、`MamlWebView$MamlWebViewClient`、`MamlInterface`、`Lcom/miui/maml/commands/WebViewCommand`
+
+### 9.1 ⚠️ 重启黑屏根因（用户实测：重启后背屏 HTML 主题黑屏，设置里正常，重装背屏 app 恢复）
+
+**根因链条（反编译实证）**：
+
+1. **local=true 时资源预载到 `maml_web_temp`，且该目录是"全主题共享"的**
+   - `WebViewScreenElement.lambda$loadUrl$1`：`local=true` → 先 `preloadWebAssets(uri)` 把 zip 里 web/ 下**所有文件**解压到 `/data/system/theme_magic/maml_web_temp/`，再以 `https://local.widget/<uri>` 加载
+   - `MamlWebView.preloadAsset` 用 `FileUtils.createTempFile(resourceLoader, "/data/system/theme_magic/maml_web_temp/", path)` 生成 `temp_<hash>.html` 临时文件
+
+2. **`finish()` 清理策略只按"文件数>5"删最旧，不按主题隔离**
+   - `WebViewScreenElement.finish()` → `FileUtils.removeFileForTime(maml_web_temp, 5)`：**目录里文件数 ≤5 时一个都不删；>5 才按修改时间排序删最旧的**（`(count-5)` 个）
+   - 于是**切换主题后旧主题的临时文件残留**（实测目录里同时有筑间工地 778178 字节 ×2 和 Windows XP 35239 字节 ×1）
+
+3. **重启时序竞态 → 黑屏**
+   - 重启后 WebView 先 `loadUrl("https://local.widget/index.html")`，`shouldInterceptRequest` 从 `maml_web_temp/temp_xxx.html` 取文件；**若 preload 线程尚未完成解压 / 或 index.html 对应临时文件因 >5 被删 / 或被另一主题的同名文件顶掉 → serveResource 返回 null → WebView 加载失败黑屏**
+   - **重装背屏 app 生效的原因**：重装清空了 `/data/system/theme_magic/maml_web_temp/`，临时文件干净 → preload 正常 → 恢复显示。**不是重装本身修复了代码，而是清缓存救的命**
+
+**✅ 修复/规避方案（优先级从高到低）**：
+
+- **A. 主题包文件数压到 ≤5**：`web/index.html` + 少量资源（图片等）控制在 5 个文件内 → `removeFileForTime` 永不删除 → 重启稳定
+- **B. 主题包结构尽量单文件**：把 JS/CSS 全部内联进 `index.html`（星舰矩阵 v1.8 就是 778KB 单 HTML），图片转 base64 内联 → **整个 web/ 只有 1 个文件** → 绝不触发清理
+- **C. 重启前手动清空**：Root shell `rm -f /data/system/theme_magic/maml_web_temp/*`（主题切换后、重启前清一次）
+- **D. 换 `local="false"` + `uri="https://..."`**（见 9.3 联网章节）不经过 local.widget 拦截器 → 无临时文件依赖，但需要联网
+
+**⚠️ 不要再"重装背屏 app"了**，那只是碰巧清了缓存。以后遇到黑屏：先 `ls /data/system/theme_magic/maml_web_temp/` 看残留，`rm -f` 清空即可。
+
+### 9.2 WebView 完整加载链路（反编译实证）
+
+```
+manifest.xml <WebView name="wv" uri="web/index.html" local="true" cachePage="true" useNetwork="all"/>
+  ↓ ScreenElementFactory 解析 → WebViewScreenElement
+  ↓ getView() 主线程 → ensureWebViewCreated() → new MamlWebView(context, local, userAgent)
+  │    ├─ WebSettings: JS✅ 禁缩放✅(supportZoom=false+initialScale=100) DOM存储=local(传参) 禁文件访问 禁多窗口 硬加速
+  │    ├─ setLayerType(LAYER_TYPE_HARDWARE)
+  │    ├─ addJavascriptInterface(new MamlInterface(vars, this), "maml")
+  │    ├─ setWebViewClient(MamlWebViewClient) + setWebChromeClient(MamlWebChromeClient)
+  │    └─ setResourceLoader(ResourceManager.getResourceLoader())
+  ↓ doTick() 每帧: uriFormatter.getText() ≠ mCurUrl → loadUrl()
+  ↓ loadUrl(url): isUrlSchemeAllowed(url)? → canUseNetwork()? → mHandler.post{ lambda$loadUrl$1 }
+  │    └─ local=true: preloadWebAssets(url) 异步解压→ maml_web_temp, 再 loadUrl("https://local.widget/"+url)
+  │    └─ local=false: 直接 loadUrl(url)
+  ↓ MamlWebViewClient.shouldInterceptRequest: host=="local.widget" && (ThemeManager|SubScreenCenter|Samples 上下文)
+  │    → path 去 "/" → serveResource(ResourceLoader, path)
+  │    └─ ZipResourceLoader: createTempFile→maml_web_temp/temp_xxx → FileInputStream → WebResourceResponse(mime, "UTF-8", 200, "OK", {"Access-Control-Allow-Origin":"*"}, stream)
+  │    └─ 其他 ResourceLoader: getInputStream(path) → 同上
+  ↓ 其他域 (http/https/非local.widget): invoke-super → **走系统默认 WebView 网络栈**
+  ↓ onPageFinished / onProgressChanged → mProgressProperty("wv.progress")
+```
+
+**关键参数映射**（构造器实证）：
+- `uri`（静态）→ TextFormatter.plain；`uriExp`（动态表达式，doTick 每帧求值变化自动重载）→ TextFormatter.expression
+- `local` → `mLocal`（决定 URL 是否包成 local.widget + 是否 preload + scheme 白名单分支）
+- `cachePage` → `mCachePage`（DOM 存储开关）
+- `useNetwork` → `mUseNetwork`：**"all"=2（默认）/"wifi"=1/其他字符串=表达式**（表达式求值非0即允许）
+- `name="wv"` → 自动注册变量 `wv.progress`（加载进度 0-100）
+
+### 9.3 联网能力（用户诉求：给 HTML 主题加联网功能）
+
+**反编译实证：联网限制其实有三层，但全都能绕开！**
+
+| 层 | 代码 | 限制 | 绕过 |
+|---|---|---|---|
+| ① scheme 白名单 | `isUrlSchemeAllowed()` | `local=true`: 不含 `://` + 非 javascript/data/vbscript 前缀才放行（**http/https 全被 `://` 挡**）；`local=false`: 仅 `https://` 前缀放行 | `local=false` + https URL |
+| ② useNetwork | `canUseNetwork()` | `mUseNetwork=2(all)`: 直接 true；`=1(wifi)`: 需 `!isActiveNetworkMetered()` && `isConnected()` | manifest 写 `useNetwork="all"`（默认就是） |
+| ③ URL 重定向 | `shouldOverrideUrlLoading()` | 只放行 `local.widget` 域和 `https://` 前缀，其他全 block | https 全放行 |
+
+**结论：MAML WebView 原生支持联网！** 条件是：
+```xml
+<WebView name="wv" x="0" y="0" w="#view_width" h="#view_height"
+         local="false" useNetwork="all" uri="https://你的服务器/page.html"/>
+```
+- `local="false"` → scheme 白名单走 https-only 分支
+- `useNetwork="all"` → canUseNetwork 恒 true
+- `https://` URL → 三层全放行，`shouldInterceptRequest` 不拦（非 local.widget）→ **真实网络请求**
+
+**⚠️ 但注意**：
+- **http://（非 https）被 scheme 白名单和 shouldOverrideUrlLoading 双重拦截** → 只能用 https
+- 本地 HTML 内 `fetch("https://...")`：页面本身是 local.widget 域 → **跨域**，但 serveResource 已返回 `Access-Control-Allow-Origin: *`，且 https 目标若服务端允许 CORS 就能通；**纯前端 fetch https 一般可行**
+- 实测记忆里「在线 fetch 不可用」很可能是当时测的是 http 或 non-CORS 目标，**换 https + CORS 服务端可突破**
+- **AndroidManifest 无 `INTERNET` 权限**（只有 `miui.permission.EXTRA_NETWORK`）——背屏中心是系统签名 app，**系统签名应用默认有网络能力**，无需担心权限
+
+### 9.4 JS 桥 MamlInterface 完整方法（反编译实证，纠正旧记录）
+
+之前记忆记录「getStringByName/getObjByName 返回 undefined/null 不可用」——**反编译证明这些方法都存在且正确实现**：
+
+| 方法 | 实现 | 说明 |
+|---|---|---|
+| `getDoubleByName(name)` | `Variables.getDouble` | 读 double 变量 ✅ |
+| `getDoubleByIndex(i)` | `Variables.getDouble` | 按索引读 |
+| `getStringByName(name)` | `Variables.getString` | **读字符串变量（真实存在）** |
+| `getStringByIndex(i)` | `Variables.getString` | 按索引读字符串 |
+| `getObjByName(name)` | `Variables.get` | **读对象变量（真实存在）** |
+| `getObjByIndex(i)` | `Variables.get` | 按索引读对象 |
+| `putInt(name, i)` / `putDouble(name, d)` / `putString(name, s)` / `putObj(name, obj)` | `Variables.put` | 写变量 |
+| `registerVariable(name)` / `registerDoubleVariable(name)` | `Variables.registerVariable` | 注册变量返回索引 |
+| `doAction(action)` | `WebViewScreenElement.performAction` | 触发 MAML 动作 |
+
+**之前 getStringByName 返回 undefined 的原因**：MAML 变量系统里**字符串变量必须先在 var_config/manifest 里声明注册**，未注册的名字 getString 返回 null/undefined（Variables.getString 对未注册键返回 null）。**注册后就能读！**
+```html
+<script>
+  // 读已注册字符串变量（如 #theme_name）
+  var name = window.maml.getStringByName("theme_name");
+  // 写变量给 MAML 用
+  window.maml.putInt("web_score", 100);
+  window.maml.putString("web_msg", "hello");
+</script>
+```
+
+### 9.5 WebViewCommand 命令（反编译实证）
+
+`WebViewCommand` 支持 3 种命令（`parseCommand` 实证）：
+- `command="runjs"` params=JS 代码 → `WebView.loadUrl("javascript:"+code)`（需在 main 线程）
+- `command="reload"` → `WebView.reload()`
+- `command="goback"` → `WebView.goBack()`
+- 其他 → `Unknown command:` 警告
+
+**XML 注意**：`params` 里的 `&` 必须转义 `&amp;`（否则 XML 解析错误直接黑屏）——之前 v21 已踩过坑。
+
+### 9.6 MAML 元素全能力图谱（subscreen.apk 252 个元素类实证）
+
+除 WebView 外，背屏 MAML SDK 完整支持（`com.miui.maml.elements.*`）：
+
+**渲染**：`AnimatedScreenElement`(帧动画) / `ImageScreenElement` / `TextScreenElement` / `ImageNumberScreenElement`(数字图) / `TimepanelScreenElement`(时间面板) / `CircleScreenElement` / `RectangleScreenElement` / `LineScreenElement` / `ArcScreenElement` / `EllipseScreenElement` / `PathElement` / `CurveScreenElement` / `GeometryScreenElement`(几何) / `PaintScreenElement`(画笔) / `GraphicsElement` / `CanvasDrawerElement` / `MirrorScreenElement`(镜像)
+
+**GL 3D**：`mgl.*`：`GLElement` / `GLScene` / `GLSceneScreenElement` / `CameraElement` / `GLTextureView` / `GLSurfaceView` / `ParticlePainterElement`(粒子) / `PainterElement` / `PrimitiveElement` / `GLUtils` + `filament.PhysicallyBasedRenderingElement`(PBR 物理渲染!) + `lottie.LottieScreenElement`(Lottie) + `GifScreenElement`(GIF) + `SpectrumVisualizerScreenElement`(频谱!)
+
+**容器/布局**：`ElementGroup` / `ElementGroupRC` / `AutoScaleElementGroup`(自动缩放) / `LayerScreenElement` / `ListScreenElement`(列表!) / `VariableArrayElement` / `ScreenElementArray` / `WindowScreenElement` / `BlurContainerScreenElement`(模糊) / `ViewHolderScreenElement`(View 容器，WebView 的父类)
+
+**交互/状态**：`ButtonScreenElement` / `AdvancedSlider`(高级滑块) / `StateElement` / `FolmeStateElement` / `FolmeConfigElement` / `FunctionElement` / `PermanenceElement` / `ConfigElement` / `AnimConfigElement` / `AnimStateElement` / `MusicControlScreenElement`(音乐控制) / `MusicController` / `FramerateController`(帧率控制) / `TimepanelScreenElement`
+
+**数据**：`BitmapProvider`(多源位图: AppIcon/文件系统/资源/URI/变量/虚拟屏) / `AttrDataBinders` / `VariableElement`
+
+**⚠️ 对主题创作的启示**：
+- 原生 MAML 就支持 **GL 3D + 粒子 + Lottie + 频谱 + 音乐控制**，复杂动效不一定非要 WebView/Three.js
+- `LottieScreenElement` + PAG 官方支持，比 WebView 省电
+- `FramerateController` 时间段帧率控制是官方省电方案
+
+### 9.7 黑屏快速诊断清单（用户以后遇到先用）
+
+```bash
+# 1. 看 maml_web_temp 残留（黑屏最常见原因）
+ls -la /data/system/theme_magic/maml_web_temp/
+# 2. 清空缓存（等价于"重装背屏 app"的效果，不用重装！）
+rm -f /data/system/theme_magic/maml_web_temp/*
+# 3. 确认系统当前实际应用的背屏主题
+settings get secure theme_rear_widget | head -c 500
+# 4. 确认 AI 壁纸目录当前 rearscreen 内容
+ls -la /sdcard/Android/data/com.android.thememanager/files/MIUI/.ai_wallpaper/maml/*/rearscreen
+# 5. 看背屏运行日志错误
+grep -aiE "webview|error|fail" /data/system/theme_magic/rear_screen_operation.log | tail -20
+```
+
+
+### 9.8 主题替换加载机制（用户纠正：第三方主题=替换官方主题文件）
+
+**用户关键补充（2026-09-14）**：第三方主题应用本来就是替换官方主题文件实现加载的——**系统主题设置里显示「3D卡通」是正常的壳（resId=46e72f3e 固定），实际加载的是被替换后的 rearscreen 文件内容**。
+
+**替换机制（md5 实证）**：
+- `.ai_wallpaper/maml/0a8aa5/rearscreen`（618808 字节） 与 `/data/system/theme/rearScreen/rearscreen_46e72f3e...1789356967892.mrc` **md5 完全一致**（`b1c015fd21178f654883259b19c878b1`）
+- 即：**MiRoot 把主题包复制进 AI 壁纸目录 rearscreen → 系统主题管理器把它当作官方 3D卡通（46e72f3e）重新应用 → 实际渲染的是替换后的 HTML**
+- 所以 `theme_rear_widget` 显示 3D卡通 **完全正常**，不代表旧主题
+
+**⚠️ 黑屏真正原因链（结合 9.1）**：
+1. 用户替换的 HTML 主题（如筑间工地 778KB 或 XP 35239 字节）通过 AI 机制成为实际加载内容
+2. **重启后 maml_web_temp 残留/被清理策略误删（>5 文件删最旧）→ local.widget 拦截取不到 index.html → WebView 黑屏**
+3. 重装背屏 app = 清空 maml_web_temp → 恢复（不是重装修复了代码）
+
+**正确结论**：黑屏根因是 **maml_web_temp 临时文件缓存问题**（9.1 的修复方案 A/B/C），不是"系统没加载用户主题"。两个 AI 目录（0a8aa5 筑间工地 / 6eafdd XP 桌面）是独立主题，系统同时只用一个，切换靠替换对应目录的 rearscreen + 手动应用。
