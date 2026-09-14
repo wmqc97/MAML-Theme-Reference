@@ -1,8 +1,9 @@
 # WebView 加载 HTML 到背屏主题
 
 > 🆕 2026-09-11 实测：背屏 WebView 可完整运行 Three.js r160（UMD 整库内嵌 + base64 纹理，单文件 761KB~5.4MB，宇宙漫游验证）；开源项目移植要点见 13 号第九章，多分辨率分档用 uriExp 切换。
-> 验证日期：2026-09-09 ~ 09-10
-> 状态：✅ 已验证可行（星际航海 / 涨水充电 / 网络测试多个主题实测）
+> 验证日期：2026-09-09 ~ 09-14（含 XP 桌面主题 v2.8：doAction 唤起应用 + HTML 侧 AOD 反编译破解）
+> 状态：✅ 已验证可行（星际航海 / 涨水充电 / 网络测试 / XP 桌面多个主题实测）
+> 🆕 2026-09-14 反编译破解：`doAction` 只触发 WebView 内 `<Triggers>`（非 ExternalCommands）；AOD 息屏必须 HTML 侧实现（非 MAML `<Aod>` 元素），详见文末第六~八章
 
 ## 核心写法
 
@@ -352,7 +353,7 @@ window.maml.doAction('my_action');                         // 触发 MAML 动作
 
 ```
 MAML → HTML:  WebViewCommand command="runjs" params="'JS代码()'"   ✅ 已验证
-HTML → MAML:  window.maml.putXxx / doAction                        ⚠️ 反编译确认，待实测
+HTML → MAML:  window.maml.putXxx / doAction                        ✅ 已实测（doAction 触发 WebView 内 Triggers）
 ```
 
 ## WebView 动态 uri（uriExp）
@@ -423,7 +424,7 @@ HTML 调用：
 
 ```
 MAML → HTML:  <WebViewCommand command="runjs" params="'JS()'"/>   ✅ 已验证
-HTML → MAML:  window.maml.putXxx / doAction                       ⚠️ 反编译确认待实测
+HTML → MAML:  window.maml.putXxx / doAction                       ✅ 已实测（doAction 触发 WebView 内 Triggers）
 MAML 读 WebView 状态: #wv.progress 变量（加载进度）
 ```
 
@@ -483,7 +484,7 @@ window.maml.putInt('html_num', 3);                    // 读回 = 3 ✅
 
 - `putInt` / `putDouble`：✅ 写数字变量（读回验证通过）
 - `putString`：✅ 写字符串变量（MAML Text 可显示）
-- `doAction`：调用成功但返回 undefined（Java void 方法），需 manifest 定义对应 action 触发器才有效果
+- `doAction`：触发 **WebView 元素内 <Triggers> 的 <Trigger action="xxx">**（精确匹配，见下方「三、纯MAML启动应用」反编译铁证）；返回 undefined（Java void）
 - `getDoubleByName`：读 MAML 数字变量 ✅（含 battery_level/battery_plug_type 等系统变量）
 
 ### HTML↔MAML 双向通信最终链路（全部实测通过）
@@ -502,3 +503,390 @@ HTML → MAML 写:     window.maml.putInt('html_num', n) → 读回一致       
 - 充电主题：HTML getBattery 真实电量 + uriExp 传 MAML 电量 + putInt 状态回传 MAML 层显示
 - 息屏省电：MAML enterAod → RUNJS 暂停 HTML 动画；HTML visibilitychange 兜底
 - 数据看板：window.maml 读系统变量（电量/时间/充电状态）在 HTML 里展示
+
+---
+
+# XP 桌面主题实战经验（2026-09-14 · v2.3）
+
+> 作者：唯梦倾城（Q群 2159063054）
+> 来源：Windows XP 复古桌面主题（WebView + HTML 完整交互桌面）多轮实测
+> 位置：/storage/emulated/0/MiRoot/主题/主题实验区/XP桌面主题/
+
+## 一、摄像头避让：absolute 布局方案（重要）
+
+星舰矩阵时钟用 `body{padding-left:29vw}`（流式布局有效），但 **XP 桌面是 absolute 定位布局**，`body padding` 对 absolute 子元素无效，必须用**安全区容器**：
+
+```css
+/* 错误：absolute 布局下 body padding 无效 */
+body{padding-left:29vw}  /* 对 position:absolute 的子元素不起作用 */
+
+/* 正确：.safe 容器 + 内部定位 */
+.safe{position:absolute;left:29vw;top:0;right:0;bottom:0;z-index:10}  /* 安全区 = 右71% */
+.wp{position:fixed;left:0;top:0;width:100vw;height:100vh;z-index:0}   /* 背景全屏可覆盖摄像头 */
+```
+
+**关键结论**：
+- **背景层**用 `position:fixed;inset:0` 全屏（可被摄像头覆盖，不影响观感）
+- **所有可交互内容**放 `.safe`（left:29vw）容器内，用 absolute 定位
+- 内容居中 = 相对 safe 计算，如窗口宽 60vw 居中 `left:(71-60)/2=5.5vw`（相对 safe），视口位置 29+5.5=34.5vw
+- 图标中间偏右 = `.safe` 内 `left:6vw` → 视口 35vw
+
+## 二、MAML 系统变量传递（存储/开机时长/步数）
+
+参照「能效标识主题」的 ContentProviderBinder 写法，用 **MAML 变量 + window.maml.getDoubleByName 读取**：
+
+```xml
+<!-- manifest.xml 关键片段 -->
+<Var name="uptimeMs" type="number" expression="#time"/>  <!-- 开机时长: 系统时间戳毫秒 -->
+
+<VariableBinders>
+  <!-- 存储: securitycenter 提供 availableSpace/totalSpace(字节) -->
+  <ContentProviderBinder name="getStorageData" uri="content://com.miui.securitycenter.widgetProvider/getCleanMasterData" columns="availableSpace,totalSpace" countName="hasStorageData">
+    <Variable name="_availableSpace" type="long" column="availableSpace"/>
+    <Variable name="_totalSpace" type="long" column="totalSpace"/>
+  </ContentProviderBinder>
+  <!-- 内存占用 -->
+  <ContentProviderBinder name="getMemoryData" uri="content://com.miui.securitycenter.widgetProvider/getMemoryData" countName="hasGetMemoryData">
+    <Variable name="_memoryOccupied" type="long" column="memoryOccupied"/>
+  </ContentProviderBinder>
+  <!-- 步数: 小米健康 -->
+  <ContentProviderBinder name="MiSteps" uri="content://com.mi.health.provider.main/activity/steps/brief" columns="steps,goal" countName="hasSteps">
+    <Variable name="MiSteps_steps" type="int" column="steps"/>
+    <Variable name="MiSteps_goal" type="int" column="goal"/>
+  </ContentProviderBinder>
+</VariableBinders>
+
+<ExternalCommands>
+  <Trigger action="init"><BinderCommand name="getStorageData" command="refresh"/></Trigger>
+  <Trigger action="exitAod"><BinderCommand name="getStorageData" command="refresh"/></Trigger>
+  <Trigger action="resume"><BinderCommand name="getStorageData" command="refresh"/></Trigger>
+</ExternalCommands>
+```
+
+```js
+// HTML 里读 MAML 变量
+function mamlVar(name){
+  try{ if(window.maml && typeof window.maml.getDoubleByName==='function'){
+    var v=window.maml.getDoubleByName(name);
+    if(v!==null&&v!==undefined&&!isNaN(v))return v;
+  }}catch(e){}
+  return null;
+}
+// 存储: 字节 -> GB
+var totalGB = mamlVar('_totalSpace')/(1024*1024*1024);
+var availGB = mamlVar('_availableSpace')/(1024*1024*1024);
+// 开机时长: 毫秒 -> 天/时/分/秒
+var uptimeSec = mamlVar('uptimeMs')/1000;
+// 步数
+var steps = mamlVar('MiSteps_steps');
+```
+
+## 三、纯 MAML 启动应用（IntentCommand）—— 反编译验证版
+
+> ⚠️ 2026-09-14 反编译背屏中心（com.xiaomi.subscreencenter）源码确认，本节为**最终正确结论**
+
+**背屏 Web 主题点击图标启动系统应用，用纯 MAML 语法**（等价 `am start -n 包名/Activity`）。
+
+### ✅ 正确写法（关键：Trigger 必须放 WebView 元素内部！）
+
+```xml
+<!-- 正确：<Trigger> 放 <WebView> 元素的 <Triggers> 内部 -->
+<WebView name="wv" x="0" y="0" w="#view_width" h="#view_height" local="true" cachePage="true" uri="web/index.html">
+  <Triggers>
+    <Trigger action="launch_kuwo">
+      <IntentCommand action="android.intent.action.MAIN" package="cn.kuwo.kwmusiccar" class="cn.kuwo.kwmusiccar.ui.WelcomeActivity"/>
+    </Trigger>
+  </Triggers>
+</WebView>
+```
+
+```js
+// HTML 点击触发（action 名精确匹配）
+window.maml.doAction('launch_kuwo');
+```
+
+### ❌ 错误写法（doAction 不触发 ExternalCommands！）
+
+```xml
+<!-- 错误：doAction 不会触发 ExternalCommands 里的 Trigger -->
+<ExternalCommands>
+  <Trigger action="content_1">
+    <IntentCommand .../>
+  </Trigger>
+</ExternalCommands>
+```
+
+### 反编译铁证（MamlInterface 源码）
+
+```java
+// doAction 只调用 WebViewScreenElement 自己的 performAction
+public void doAction(String action) {
+    mWebViewScreenElementRef.get().performAction(action);
+}
+
+// performAction 只触发该元素的 mTriggers（元素内 <Triggers>）
+public void performAction(String action) {
+    if (mTriggers != null && action != null) {
+        mTriggers.onAction(action);
+        requestUpdate();
+    }
+}
+
+// onAction → isAction → 精确字符串匹配（String.equals）
+public boolean isAction(String action) {
+    for (String s : mActionStrings) {
+        if (s.equals(action)) return true;  // 精确匹配，不是前缀
+    }
+    return false;
+}
+```
+
+**核心结论**：
+- `window.maml.doAction('xxx')` → 触发 **WebView 元素自身 `<Triggers>` 内 `<Trigger action="xxx">`**（精确字符串匹配）
+- **不是** `<ExternalCommands>` 的 Trigger，**不是** `<Button>` 的 OnClick
+- `<IntentCommand action="android.intent.action.MAIN" package="xx" class="xx"/>` = 等价 `am start -n xx/xx`，纯 MAML 原生启动（无需 MiRoot 广播）
+- 查询包名/Activity：`cmd package resolve-activity --brief -c android.intent.category.LAUNCHER <包名>`，或 `pm path <包名>` + `dumpsys package <包名> | grep LAUNCHER`
+- 酷我车机版 = `cn.kuwo.kwmusiccar` + `.ui.WelcomeActivity`
+
+### MiRoot 广播拉起背屏应用（备选方案）
+
+MiRoot 的 `ACTION_LAUNCH_APP_ON_REAR` 是给 **`startService`** 用的（不是广播！），且依赖 Root/Shizuku 特权通道：
+
+```bash
+# 正确调用方式（startservice 而非 broadcast）
+am startservice -a com.wmqc.miroot.rear.ACTION_LAUNCH_APP_ON_REAR \
+  --es packageName cn.kuwo.kwmusiccar \
+  --ez launchFromRearDesktop true \
+  -n com.wmqc.miroot/.rear.RearAppLaunchService
+```
+
+反编译 `RearAppLaunchService` 确认：需要 `rootReady=true` 或 `shizukuRunning&&shizukuGranted`，否则 `"no privileged shell channel, skip rear launch"` 直接跳过。MAML 主题里优先用上面的 IntentCommand 方案，MiRoot 广播只做备选。
+
+## 四、XP 桌面交互经验（窗口拖动/显示桌面/托盘点击）
+
+### 1. 窗口拖动坐标陷阱（必踩坑）
+
+窗口是 `.safe`（left:29vw）子元素时，`style.left` 是**相对 safe 的坐标**，而 `getBoundingClientRect()` 返回**视口坐标**，必须换算：
+
+```js
+// 拖动开始: 视口坐标 -> safe 内坐标
+var r = w.getBoundingClientRect();
+w.style.left = (r.left - SAFE_LEFT) + 'px';   // 关键: 减 SAFE_LEFT！
+
+// 拖动移动: 同样减 SAFE_LEFT
+var maxL = (innerWidth - SAFE_LEFT) - w.offsetWidth;
+w.style.left = Math.max(0, Math.min(maxL, (x - ox) - SAFE_LEFT)) + 'px';
+```
+
+**错误写法**（窗口飞出屏幕拖不回来）：`w.style.left = r.left`（视口值当 safe 内坐标用）。
+
+### 2. 窗口居中定位
+
+```css
+/* 不用 transform 居中（背屏 WebView 兼容问题），用明确 left */
+.win{width:60vw; left:5.5vw}  /* (71-60)/2 = 5.5vw, 相对 safe 居中 */
+```
+
+### 3. 显示桌面（点托盘时间隐藏所有窗口）
+
+```js
+function showDesktop(){
+  Object.keys(winEls).forEach(function(id){
+    winEls[id].classList.add('hidden');
+    winEls[id].classList.remove('min');
+  });
+  Object.keys(taskBtn).forEach(function(id){ taskBtn[id].classList.remove('active'); });
+  closeMenu();
+}
+// 点托盘时间触发
+clockEl.addEventListener('click', function(){ showDesktop(); showToast('显示桌面'); });
+```
+
+**坑**：窗口恢复时 `toggleWin` 必须 `remove('min','hidden')`（两个都清），否则 `showDesktop` 加的 `hidden` 没清，任务栏按钮点不回来。
+
+### 4. 提示 toast 在安全区居中
+
+```css
+.toast{left:64.5vw; transform:translateX(-50%)}  /* (29+100)/2=64.5vw, 安全区中心 */
+/* 不是 left:50%！50% 是视口中心，会偏左进摄像头区 */
+```
+
+## 五、其他踩坑
+
+1. **heredoc 写 HTML 单引号**：`cat > file <<'EOF'`（引号 EOF）单引号不被 shell 转义；用 `sed` 含单引号的替换容易出错，**整文件重写比多次 sed 打补丁更可靠**
+2. **sed 跨行替换**：toybox sed 不支持 `\n` 在匹配模式里，跨行替换会失败，改用行号 `sed -i 'Ns/.../'` 或 `sed -i 'N,Nd'` + 插入
+3. **图标双击会息屏**：背屏系统把双击映射为息屏，桌面图标必须**单击即开**，不要做双击交互
+4. **35dp 圆角**：屏幕右下角有物理圆角，托盘/时间要留 `padding-right` 避让（约 2.5vw~4vw），不是右边距 9vw 那么多
+5. **经典 XP 四色旗**：用 SVG 波浪平行四边形（红绿蓝黄 + 渐变），不是 2×2 方块，也不是一排四块
+6. **MAML 变量是加载快照**：`window.maml.getDoubleByName` 读的是页面加载时的值，要实时需配合 `BinderCommand refresh` + 重新读取
+
+---
+
+# HTML 唤起安卓应用 + AOD 息屏（2026-09-14 反编译破解 · v2.8）
+
+> 关键突破：反编译背屏中心 `com.xiaomi.subscreencenter` 的 `MamlInterface`，彻底搞清 `doAction` 机制和 AOD 正确方案。
+
+## 六、HTML 唤起安卓应用（doAction 机制破解）
+
+### ⚠️ 核心结论：doAction 只触发 WebView 元素内部的 Triggers，不是 ExternalCommands！
+
+之前一直以为 `window.maml.doAction('content_1')` 触发 `<ExternalCommands><Trigger action="content_1">`，**这是错的**。
+
+### 反编译铁证（MamlInterface 源码）
+
+```java
+// com.miui.maml.elements.web.MamlInterface
+public void doAction(String action) {
+    // 1. 从 WeakReference 拿 WebViewScreenElement
+    // 2. 只调用它自己的 performAction
+    mWebViewScreenElementRef.get().performAction(action);
+}
+
+// com.miui.maml.elements.ScreenElement
+public void performAction(String action) {
+    if (mTriggers != null && action != null) {
+        mTriggers.onAction(action);   // 只触发「该元素」的 mTriggers
+        requestUpdate();
+    }
+}
+
+// com.miui.maml.CommandTrigger
+public boolean isAction(String action) {
+    for (String s : mActionStrings) {   // action 属性(逗号分隔多值)
+        if (s.equals(action)) return true;   // 精确字符串匹配
+    }
+    return false;
+}
+```
+
+### 正确写法：Trigger 放在 WebView 元素内部
+
+```xml
+<Widget version="2" frameRate="30" scaleByDensity="false" screenWidth="976" transparentSurface="true">
+  <!-- ✅ 正确: Triggers 在 WebView 元素内部 -->
+  <WebView name="wv" x="0" y="0" w="#view_width" h="#view_height" 
+           local="true" cachePage="true" uri="web/index.html">
+    <Triggers>
+      <Trigger action="launch_kuwo">
+        <IntentCommand action="android.intent.action.MAIN" 
+                       package="cn.kuwo.kwmusiccar" 
+                       class="cn.kuwo.kwmusiccar.ui.WelcomeActivity"/>
+      </Trigger>
+    </Triggers>
+  </WebView>
+  <!-- ❌ 错误: 放 ExternalCommands 里 doAction 触发不到 -->
+  <!-- <ExternalCommands><Trigger action="content_1">...</Trigger></ExternalCommands> -->
+</Widget>
+```
+
+```js
+// HTML 里
+window.maml.doAction('launch_kuwo');  // 精确匹配 WebView 内 <Trigger action="launch_kuwo">
+```
+
+### 完整链路
+
+```
+HTML: window.maml.doAction('launch_kuwo')
+  → MamlInterface.doAction('launch_kuwo')
+  → WebViewScreenElement.performAction('launch_kuwo')
+  → CommandTriggers.onAction('launch_kuwo')
+  → CommandTrigger.isAction('launch_kuwo')  精确 equals 匹配
+  → 执行 <IntentCommand> 启动应用 ✅
+```
+
+### 查应用包名/Activity 的方法
+
+```bash
+pm path <包名>                                    # 找 apk 路径
+cmd package resolve-activity --brief -c android.intent.category.LAUNCHER <包名>
+# 或 dumpsys package <包名> | grep LAUNCHER
+```
+
+### MamlInterface 完整方法表（反编译确认）
+
+| 方法 | 说明 | 可用 |
+|------|------|------|
+| `doAction(String)` | 触发 WebView 元素内 Triggers（精确匹配 action） | ✅ 本功能 |
+| `getDoubleByName(String)` | 读 MAML 数字变量 | ✅ |
+| `getDoubleByIndex(int)` | 按索引读数字变量 | ✅ |
+| `putInt(String,int)` / `putDouble` / `putString` / `putObj` | 写 MAML 变量 | ✅ |
+| `getStringByName/ByIndex` | 读字符串变量（实测返回 undefined） | ⚠️ |
+| `getObjByName/ByIndex` | 读对象变量（实测返回 null） | ⚠️ |
+| `registerVariable/registerDoubleVariable` | 注册变量 | — |
+
+## 七、AOD 息屏：HTML 侧实现（不用 MAML <Aod> 元素）
+
+### ⚠️ 核心结论：背屏 WebView 主题的 AOD 必须 HTML 侧实现，MAML <Aod> 元素在背屏 WebView 场景不生效！
+
+参考「漫游宇宙」主题，正确链路是 **MAML 检测 enterAod → RUNJS 通知 HTML → HTML 切 AOD 画面**。
+
+### manifest 写法
+
+```xml
+<ExternalCommands>
+  <Trigger action="enterAod">
+    <WebViewCommand target="wv" command="runjs" params="'__setAod(1)'"/>
+  </Trigger>
+  <Trigger action="exitAod">
+    <WebViewCommand target="wv" command="runjs" params="'__setAod(0)'"/>
+  </Trigger>
+  <Trigger action="pause">
+    <WebViewCommand target="wv" command="runjs" params="'__setAod(1)'"/>
+  </Trigger>
+  <Trigger action="resume">
+    <WebViewCommand target="wv" command="runjs" params="'__setAod(0)'"/>
+  </Trigger>
+  <Trigger action="init">
+    <WebViewCommand target="wv" command="runjs" params="'__setAod(0)'" delay="2000"/>
+  </Trigger>
+</ExternalCommands>
+```
+
+### HTML 写法
+
+```html
+<!-- AOD 画面(黑底蓝屏待机风, 内容 left:29vw 避摄像头) -->
+<div id="aod">
+  <div class="aod-safe">
+    <div class="aod-xp">Windows XP</div>
+    <div class="aod-time" id="aodTime">--:--</div>
+    <div class="aod-date" id="aodDate">----</div>
+    <div class="aod-foot">
+      <span id="aodSteps">步数 --</span>
+      <span id="aodBattery">电量 --%</span>
+    </div>
+  </div>
+</div>
+```
+
+```js
+window.__setAod = function(v){
+  if(Number(v)===1||v===true||v==='1'){
+    aodRefresh();                    // 刷新时间/步数/电量
+    $('#aod').classList.add('show'); // 显示 AOD
+  } else {
+    $('#aod').classList.remove('show');
+  }
+};
+/* 息屏时定时刷新(省电: 30秒一次) */
+setInterval(function(){ if($('#aod').classList.contains('show')) aodRefresh(); }, 30000);
+```
+
+### AOD 设计要点
+
+1. **黑底**（`#000000`）OLED 最省电，`frameRate=1`
+2. **字体加大**：背屏视口高 212px，AOD 大时钟约 19vh（~40px）才醒目，步数/电量 6vh
+3. **避摄像头**：内容在 `left:29vw` 安全区内居中
+4. **数据实时**：用 `window.maml.getDoubleByName` 读系统变量（`#battery_level` 电量、`#MiSteps_steps` 步数）
+
+## 八、MiRoot 背屏启动应用广播（另类方案，需特权通道）
+
+`com.wmqc.miroot.rear.ACTION_LAUNCH_APP_ON_REAR` 是 MiRoot 的背屏启动应用方案，但：
+
+- **必须用 `am startservice` 而非 `am broadcast`**（IntentService 不是广播接收器）
+- **依赖 Root/Shizuku 特权 Shell 通道**（日志 `route=ROOT`），无特权会 skip
+- 在主题里用纯 MAML `doAction` 更直接，不需要 MiRoot 广播
+- 反编译确认：`RearAppLaunchService.handleLaunchAppOnRearIntent` 检查 `rootReady`/`shizukuGranted`，无特权则「skip rear launch」
+
+**结论**：主题内唤起应用优先用 **`<WebView>` 内 `<Triggers>` + `doAction`**，最简单可靠，不依赖 MiRoot 特权通道。
