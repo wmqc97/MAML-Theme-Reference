@@ -8,15 +8,23 @@
 
 ## 一、目标文件格式（与「星舰矩阵时钟」完全一致）
 
+> 🔴 **2026-09-16 更新：打包统一 `.zip` 后缀**（用户确认，后续所有打包都用 .zip）
+
 背屏 Web 主题 = **HTML 加载型**，固定 4 文件、根级 zip：
 
 ```
-主题名.zip
+主题名_vX.Y.zip
 ├── manifest.xml      ← MAML 布局 + WebView(uri=web/index.html) + AOD 暂停（无手势）
 ├── var_config.xml    ← 仅控制项 + 作者信息行；根标签只写 <WidgetConfig version="1">
 ├── description.xml   ← 主题信息唯一载体：title/author/designer/description（<theme> 根）
 └── web/index.html    ← 全部 HTML/CSS/JS 内联单文件（Canvas 全自绘，零外部资源）
 ```
+
+**成品命名规范（硬性）**：`主题名_vX.Y.zip`（如 `美好将至_艺术光语_v3.4.zip`）
+- ✅ `主题名_vX.Y.zip`
+- ❌ `主题名_vX.Y.zip.zip`（重复后缀）
+- ❌ `主题名_vX.Y.mrc.mrc`（旧 .mrc 时代的重复后缀）
+- 打包时 outputName 直接写完整 `xxx.zip`，不要再让工具自动补 `.mrc`/`.zip`
 
 任何"加载 HTML 的背屏主题"都按这个模板起步，在此之上加内容。
 
@@ -75,14 +83,19 @@
 
 ## 五、一条龙流程（每次创建/修改都走这套）
 
+> 🔴 **2026-09-16 更新：打包统一 `.zip` 后缀 + Hook 优先安装**（用户确认）
+
 ```
 ① 听需求 → 缺信息弹 ask_user（机型/效果/配色/功能取舍）→ 确认
 ② 在 主题实验区/主题名/ 写 4 文件（套用 13 号模板 + 本规范默认约定）
 ③ HTML 语法体检：抽 <script> → QuickJS `new Function` 检查（防黑屏）
-④ 纯 zip 打包（cd 目录 && zip -r out.zip . -x '*.bak'），**禁用会注入元数据到 var_config 的打包器**
+④ 打包统一 **.zip** 后缀（miroot_theme_pack format=zip 或纯 zip），**严禁 .zip.zip / .mrc.mrc 重复后缀**：
+   - outputName 只写 `主题名_vX.Y.zip`（不要写 `xxx.zip.zip`、`xxx.mrc.mrc`）
+   - 打包前检查源码目录无 *.bak / *.tmp 等杂项；打完 look 一下产物名确认单后缀
 ⑤ miroot_theme_probe 确认 rear_widget；miroot_maml_validate 校验（WebViewCommand 报未知标签=正常扩展，忽略）
-⑥ miroot_theme_test_install（directory=AI壁纸目录, filePath=zip, keepBackup=true, jumpToSettings=true）
-⑦ 用户在系统背屏列表手动应用 → 翻转验证 → 按反馈迭代（改完回到 ③）
+⑥ miroot_theme_test_install **优先 Hook 直接安装**：directApply=true（仅 root+模块生效，失败自动回退替换流程）；
+   替换流程参数：directory=AI壁纸目录, filePath=zip, keepBackup=true, jumpToSettings=true
+⑦ 用户在系统背屏列表手动应用（Hook 失败时）→ 翻转验证 → 按反馈迭代（改完回到 ③）
 ⚠️ 改了 HTML 文件一律 ③④⑤⑥ 全走；不要 shell 拼接改代码（曾坏档丢函数）
 ```
 
@@ -96,4 +109,6 @@
 | 在线资源 | WebView 禁外网 → 全部内联/本地 |
 | toybox grep | 不支持 `\|` 交替 → 用固定串分次 grep |
 | zip 压缩 | 打包器可能注入元数据 → 纯 zip |
+| **重复后缀** | 统一 .zip，严禁 .zip.zip / .mrc.mrc → outputName 写完整 `xxx.zip` |
+| **安装方式** | **优先 Hook（directApply=true）**，失败才走替换（jumpToSettings=true 手动应用） |
 | 手势 | 默认不加；MiRoot 有自动注入，重复内置反而乱 |
