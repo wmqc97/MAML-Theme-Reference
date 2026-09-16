@@ -1065,3 +1065,68 @@ grep -aiE "webview|error|fail" /data/system/theme_magic/rear_screen_operation.lo
 3. 重装背屏 app = 清空 maml_web_temp → 恢复（不是重装修复了代码）
 
 **正确结论**：黑屏根因是 **maml_web_temp 临时文件缓存问题**（9.1 的修复方案 A/B/C），不是"系统没加载用户主题"。两个 AI 目录（0a8aa5 筑间工地 / 6eafdd XP 桌面）是独立主题，系统同时只用一个，切换靠替换对应目录的 rearscreen + 手动应用。
+### 9.9 ⚠️ 联网勘误 + Hook 开发坐标（2026-09-15 最新反编译实证，供电脑 AI 工具开发验证）
+
+> **9.3 的「系统签名应用默认有网络能力，无需担心权限」结论有误，特此更正！**
+
+#### 9.9.1 Manifest 权限实锤：无 INTERNET = 内核级断网
+
+subscreencenter.apk manifest 全量权限里**没有 `android.permission.INTERNET`**（只有 `miui.permission.EXTRA_NETWORK`，实测无效）。
+
+后果链（实测）：
+```
+manifest 无 INTERNET → 安装时包管理不授予 gid 3003 (AID_INET)
+→ 进程 /proc/<pid>/status Groups 无 3003
+→ socket()/connect() 被内核拒绝 (EPERM) → curl 000
+→ WebView 内 fetch/https 全部失败（即使过了 MAML 层三重限制）
+```
+
+**所以联网增强 = 权限层（必做）+ MAML 层（hook 放行）双管齐下**，缺一不可。
+
+#### 9.9.2 电脑 AI 工具可直接用的 Hook 坐标（LSPosed 模块）
+
+**① 权限层（根治，三选一）**
+
+| 方案 | 做法 | 优缺点 |
+|---|---|---|
+| A. zygote hook（推荐） | hook `Zygote#forkAndSpecialize`，给目标 uid(背屏 10209) 追加 gid 3003 | 根治、免破签；LSPosed 作用域选 system |
+| B. packages.xml 加权限 | 给背屏加 `<uses-permission>` INTERNET + 重启 | 零代码但需 root + 备份，重启生效 |
+| C. root 代理转发 | MiRoot 特权通道代 grpc/curl | 不用改系统，但每条请求要走代理，不透明 |
+
+**② MAML 层（进程内 hook，必做）**
+
+```java
+// 作用域: com.xiaomi.subscreencenter + com.android.thememanager + com.miui.miwallpaper
+
+// 1) useNetwork 恒真（useNetwork=\"all\" 等价，但防止主题没写）
+XposedHelpers.findAndHookMethod(\"com.miui.maml.elements.WebViewScreenElement\", cl,
+    \"canUseNetwork\", new XC_MethodHook() {
+        @Override protected void beforeHookedMethod(MethodHookParam p) { p.setResult(true); }
+    });
+
+// 2) scheme 白名单全放行（local=true 时 http 也被禁，这个 hook 让 https 也能过）
+XposedHelpers.findAndHookMethod(\"com.miui.maml.elements.WebViewScreenElement\", cl,
+    \"isUrlSchemeAllowed\", String.class, new XC_MethodHook() {
+        @Override protected void beforeHookedMethod(MethodHookParam p) { p.setResult(true); }
+    });
+```
+
+**Hook 后**：`loadUrl` 的 `isUrlSchemeAllowed`（日志 `loadUrl blocked by scheme whitelist`）和 `canUseNetwork`（日志 `loadUrl canceled due to useNetwork setting.`）两个拦截点全部放行，`mUseNetwork` 值不再产生影响。
+
+#### 9.9.3 MamlWebView 构造器 WebSettings 复核（hook 前先确认）
+
+`MamlWebView.<init>(Context, boolean local, String userAgent)` 实证设置：
+- JS 开、缩放全禁（supportZoom=false + initialScale=100）、多窗口禁、硬加速（setLayerType HARDWARE）
+- **禁文件/内容访问**（setAllowFileAccess(false) / setAllowContentAccess(false)）
+- DOM 存储 = local 参数传入值
+- **没有 setBlockNetworkLoads(true)** → WebSettings 层没有主动断网，网络限制只在 MAML 方法 + Manifest 权限
+
+#### 9.9.4 shouldInterceptRequest 兜底细节（local.widget 资源拦截）
+
+- 仅当 context 是 ThemeManager / SubScreenCenter / Samples 之一才拦截 serveResource
+- host == \"local.widget\" → path 去 \"/\" → `ResourceLoader` 取流 → 返回 `WebResourceResponse(mime, \"UTF-8\", 200, \"OK\", {\"Access-Control-Allow-Origin\":\"*\"}, stream)`
+- 其他 host（http/https）→ `invoke-super` 走系统默认网络栈
+- **CORS 头 `Access-Control-Allow-Origin: *` 是 serveResource 自己加的** → local.widget 页面内 fetch https 跨域理论可行（还需服务端 CORS + 内核网络权限）
+
+---
+*作者：唯梦倾城 | 2026-09-15 深度反编译实证 | 与 17-背屏联网XposedHook模块实现.md 第十章配套*
