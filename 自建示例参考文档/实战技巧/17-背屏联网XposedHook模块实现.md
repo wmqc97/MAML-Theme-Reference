@@ -226,4 +226,83 @@ reboot
 - `SubScreenCenterApp` → 背屏 Application 入口（可 hook onCreate 注入）
 
 ---
-*作者：唯梦倾城 | 2026-09-14 | 与 12-WebView加载HTML到背屏.md 第九章配套*
+
+## 十、反编译实证：HTML 加载体系与联网增强 Hook 坐标（2026-09-15 更新，供电脑 AI 工具直接开发）
+
+> 本节基于 subscreencenter.apk v426082119（RELEASE-1.0.2608211912，minSdk 35 / targetSdk 37）MT 反编译实证，所有类名/方法/Smali 行为均来自实测，**电脑端 hook 模块可直接照抄类名开发**。
+
+### 10.1 HTML 加载完整类体系（都在背屏 app 内，无混淆）
+
+| 类 | 职责 | 关键点 |
+|---|---|---|
+| `com.miui.maml.elements.WebViewScreenElement` | MAML `<WebView>` 元素（TAG_NAME="WebView"） | 联网三重限制都在这里：`isUrlSchemeAllowed` / `canUseNetwork` / `loadUrl` |
+| `com.miui.maml.elements.web.MamlWebView` | 实际 WebView（继承 `android.webkit.WebView`） | 构造器配置全部 WebSettings；`VIRTUAL_BASE_URL="https://local.widget/"`，`VIRTUAL_HOST="local.widget"` |
+| `com.miui.maml.elements.web.MamlWebView$MamlWebViewClient` | WebViewClient | `shouldInterceptRequest`（local.widget 资源拦截）、`shouldOverrideUrlLoading`（白名单） |
+| `com.miui.maml.elements.web.MamlWebView$MamlWebChromeClient` | WebChromeClient | 进度回调等 |
+| `com.miui.maml.elements.web.MamlInterface` | JS 桥，注入名 `maml` | 16 个方法全会话实证，见 10.4 |
+| `com.miui.maml.commands.WebViewCommand` | MAML 命令 `runjs`/`reload`/`goback` | 命令参数 & 需 `&amp;` |
+| `com.miui.maml.ScreenElementRoot` | 根元素 | `mMamlViewConfig` / `setMamlViewOnExternCommandListener` |
+| `com.miui.maml.component.MamlView` | MAML 容器 View | 背屏主视图容器 |
+
+**关键常量（MamlWebView）**：`VIRTUAL_BASE_URL = "https://local.widget/"`，`VIRTUAL_HOST = "local.widget"`——HTML 本地资源全部以 `https://local.widget/<资源路径>` 形式加载，由 `shouldInterceptRequest` 兜底接管。
+
+### 10.2 联网三重限制（实证 Smali 行为）
+
+#### ① `WebViewScreenElement.isUrlSchemeAllowed(String)` — scheme 白名单
+- 逻辑：空串 false；含 `://` 的检查前缀，**含 `javascript:` / `data:` / `vbscript:` → false（禁）**；`https://` 前缀 → true；其余（含 `http://`）→ false
+- **local=true 时连 http 都禁**，local=false 只放 https。
+- **Hook 建议**：`XposedHelpers.findAndHookMethod("com.miui.maml.elements.WebViewScreenElement", lpparam.classLoader, "isUrlSchemeAllowed", String.class, new XC_MethodHook() { @Override protected void beforeHookedMethod(MethodHookParam param) { param.setResult(true); } })` — 让所有 scheme 放行
+
+#### ② `WebViewScreenElement.canUseNetwork()` — useNetwork 判断
+- Smali 实证：`mUseNetwork == 2 (USE_NETWORK_ALL) → return true`（恒真）；`== 1 (USE_NETWORK_WIFI) → 仅非计费且已连接时 true`；否则 false
+- **Hook 建议**：同样 before 返回 true，一劳永逸。
+
+#### ③ `WebViewScreenElement.loadUrl(String)` — 联网入口（先白名单后 useNetwork）
+- Smali 实证顺序：① `isUrlSchemeAllowed(url)` 不过 → 打日志 `loadUrl blocked by scheme whitelist` 直接 return；② `canUseNetwork()` false 且 url 以 `http` 开头 → 打日志 `loadUrl canceled due to useNetwork setting.` return；③ 通过 → 存 `mCurUrl` 并 `mHandler.post` 到主线程执行
+- **Hook 建议**：只 hook ①② 两个返回点即可，无需动 loadUrl 本身。
+
+### 10.3 MamlWebView 构造器 WebSettings 全配置（实证）
+
+`MamlWebView.<init>(Context, boolean local, String userAgent)`：
+- `setUserAgentString(userAgent)`（非空时）
+- `setAllowFileAccess(false)` / `setAllowContentAccess(false)`（**禁文件/内容访问**）
+- `setJavaScriptEnabled(true)`（JS 开）
+- `setBuiltInZoomControls(false)` / `setDisplayZoomControls(false)` / `setSupportZoom(false)`
+- `setSupportMultipleWindows(false)`
+- `setDomStorageEnabled(local)`（local=true 才开 DOM storage）
+- `setMediaPlaybackRequiresUserGesture(!local)`
+- `setInitialScale(100)` / 滚动条禁用 / 长按禁用 / `setLayerType(LAYER_TYPE_HARDWARE=2, null)`
+- 设置 `MamlWebViewClient` + `MamlWebChromeClient`
+
+**注意**：此处**没有** `setBlockNetworkLoads(true)`——WebSettings 层并未禁止网络，真正的限制在 10.2 的三个方法 + Manifest 缺 INTERNET 权限。
+
+### 10.4 MamlInterface JS 桥方法全表（16 个，实证）
+
+`maml.getDoubleByName(name)` / `maml.getDoubleByIndex(i)` / `maml.getStringByName(name)` / `maml.getStringByIndex(i)` / `maml.getObjByName(name)` / `maml.getObjByIndex(i)` / `maml.putInt(name, i)` / `maml.putDouble(name, d)` / `maml.putString(name, s)` / `maml.putObj(name, obj)` / `maml.registerVariable(name)` / `maml.registerDoubleVariable(name)` / `maml.doAction(name)` —— 全部真实存在（对应 `Variables.get/put/register + ScreenElement.performAction`）。
+
+### 10.5 Manifest 权限实锤（联网失败内核根因）
+
+subscreencenter manifest **无 `android.permission.INTERNET`**！已声明权限含：`ACCESS_WIFI_STATE` / `WAKE_LOCK` / `DEVICE_POWER` / `WRITE_SECURE_SETTINGS` / `miui.permission.EXTRA_NETWORK` 等，**独缺 INTERNET** → 进程 Groups 无 gid 3003 → socket 被内核拒绝（curl 000）。
+
+### 10.6 电脑 AI 工具开发 recommandation（三条路）
+
+**方案 A（zygote hook 根治，推荐）**：hook `Zygote#forkAndSpecialize` / `Zygote#forkAndSpecializeInternal`，给目标 uid（背屏 10209）追加 gid 3003，进程自带 inet 组，WebView 直接联网。电脑侧可直接写 Xposed/LSPosed 模块。
+
+**方案 B（进程内 hook 增强）**：hook 上述三个方法（10.2 ①② 强制放行）——但这只能过 MAML 层限制，**过不了内核 gid 3003**，必须配合 A 或 C。
+
+**方案 C（packages.xml 加权限，零开发）**：给背屏加 `<uses-permission name="android.permission.INTERNET"/>` + 重启（需 root + 备份）。
+
+**推荐组合**：A（或 C）+ B，缺一不可。B 的 hook 代码（LSPosed 模块可直接用）：
+
+```java
+// 作用域: com.xiaomi.subscreencenter + com.android.thememanager
+XposedHelpers.findAndHookMethod("com.miui.maml.elements.WebViewScreenElement", cl, "canUseNetwork", new XC_MethodHook() {
+    @Override protected void beforeHookedMethod(MethodHookParam p) { p.setResult(true); }
+});
+XposedHelpers.findAndHookMethod("com.miui.maml.elements.WebViewScreenElement", cl, "isUrlSchemeAllowed", String.class, new XC_MethodHook() {
+    @Override protected void beforeHookedMethod(MethodHookParam p) { p.setResult(true); }
+});
+```
+
+---
+*作者：唯梦倾城 | 2026-09-15 更新（追加第十章反编译实证） | 与 12-WebView加载HTML到背屏.md 第九章配套*
