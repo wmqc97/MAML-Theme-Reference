@@ -44,16 +44,16 @@
 ## 三、默认约定（创建时自动应用）
 
 1. **作者**：`description.xml` 的 `author/designer/authors/designers` 一律填 **唯梦倾城**
-2. **作者展示**：`var_config.xml` 第一行放作者信息条。**主方案：Text 只读**（displayTitle=作者名 / item=Q群，无开关最干净，v1.8 跑通）：
+2. **作者展示**：`var_config.xml` 第一行放作者信息条。**主方案：Text 只读**（displayTitle=作者名+版本号 / item=Q群，无开关最干净，v1.8 跑通）：
    ```xml
-   <Text name="author_info" displayTitle="✦ 唯梦倾城 ✦" editable="false" maxLength="30" minLength="0">
-     <Language displayTitle="✦ 唯夢傾城 ✦" locale="zh_TW"/>
-     <Language displayTitle="✦ 唯夢傾城 ✦" locale="zh_HK"/>
-     <Language displayTitle="✦ Mengqingcheng ✦" locale="en_US"/>
+   <Text name="author_info" displayTitle="✦ 唯梦倾城 · 3.4 ✦" editable="false" maxLength="30" minLength="0">
+     <Language displayTitle="✦ 唯夢傾城 · 3.4 ✦" locale="zh_TW"/>
+     <Language displayTitle="✦ 唯夢傾城 · 3.4 ✦" locale="zh_HK"/>
+     <Language displayTitle="✦ Mengqingcheng · v3.4 ✦" locale="en_US"/>
      <item>Q群 2159063054</item>
    </Text>
    ```
-   → 用户打开主题设置第一行即见作者+Q群。备用方案：OnOff 信息行（`displayTitle="✦ 唯梦倾城 · Q群 2159063054 ✦" default="1"`，见 06 号第五节）；Q群号 **2159063054**
+   → 用户打开主题设置第一行即见作者+**版本号**+Q群。**版本号必须 = `description.xml` 的 `<version>`**，每次更新主题时同步改（主题设置里可直接看出当前装的版本，方便用户反馈定位）；备用：OnOff 信息行（`displayTitle="✦ 唯梦倾城 · 3.4 · Q群 2159063054 ✦" default="1"`）；常量：作者 `唯梦倾城`、Q群 `2159063054`
 3. **手势默认不加**：manifest **不含**手势注入层（仅用户明确要求时才加；MiRoot 有导入自动注入手势功能，勿重复内置）
 4. **主题信息**只在 description.xml；var_config 不写 name/author/des
 5. **HTML 减少资源占用**（防手机卡顿）：
