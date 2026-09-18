@@ -277,22 +277,23 @@ var_config 无专用纯文本控件，作者+Q群展示两方案（v1.8 跑通�
 
 **A. Text 只读（推荐，无开关）**：
 ```xml
-<Text name="author_info" displayTitle="✦ 唯梦倾城 ✦" editable="false" maxLength="30" minLength="0">
-  <Language displayTitle="✦ 唯夢傾城 ✦" locale="zh_TW"/>
-  <Language displayTitle="✦ Mengqingcheng ✦" locale="en_US"/>
+<!-- 2026-09-18 约定：作者名后带版本号，方便主题设置里定位当前版本 -->
+<Text name="author_info" displayTitle="✦ 唯梦倾城 · 3.4 ✦" editable="false" maxLength="30" minLength="0">
+  <Language displayTitle="✦ 唯夢傾城 · 3.4 ✦" locale="zh_TW"/>
+  <Language displayTitle="✦ Mengqingcheng · v3.4 ✦" locale="en_US"/>
   <item>Q群 2159063054</item>
 </Text>
 ```
 
 **B. OnOff 信息行（备用）**：
 ```xml
-<OnOff name="author_info" displayTitle="✦ 唯梦倾城 · Q群 2159063054 ✦" default="1">
-  <Language displayTitle="✦ 唯夢傾城 · Q群 2159063054 ✦" locale="zh_TW"/>
-  <Language displayTitle="✦ Mengqingcheng · QQ Group 2159063054 ✦" locale="en_US"/>
+<OnOff name="author_info" displayTitle="✦ 唯梦倾城 · 3.4 · Q群 2159063054 ✦" default="1">
+  <Language displayTitle="✦ 唯夢傾城 · 3.4 · Q群 2159063054 ✦" locale="zh_TW"/>
+  <Language displayTitle="✦ Mengqingcheng · v3.4 · QQ Group 2159063054 ✦" locale="en_US"/>
 </OnOff>
 ```
 
-常量：作者 `唯梦倾城`、Q群 `2159063054`。详见 14 号规范与 06 号第五节。
+常量：作者 `唯梦倾城`、Q群 `2159063054`。**版本号必须与 description.xml 的 `<version>` 一致，每次更新同步改**。详见 14 号规范与 06 号第五节。
 
 ---
 
