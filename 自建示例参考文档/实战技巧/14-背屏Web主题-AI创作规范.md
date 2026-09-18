@@ -112,3 +112,28 @@
 | **重复后缀** | 统一 .zip，严禁 .zip.zip / .mrc.mrc → outputName 写完整 `xxx.zip` |
 | **安装方式** | **优先 Hook（directApply=true）**，失败才走替换（jumpToSettings=true 手动应用） |
 | 手势 | 默认不加；MiRoot 有自动注入，重复内置反而乱 |
+
+---
+
+## 七、居中式微调与"右侧居中"术语（2026-09-18 用户确认 ★ 必读）
+
+> 用户说 **"右侧居中" = "避开左侧摄像头（SAFE 避让区）后，右侧剩余区域内居中"**，不是屏幕右半区居中。
+> **水平居中 / 垂直居中 / 整体居中，都是指右侧剩余区域内的居中**，不是全屏居中。
+
+```js
+/* 右侧剩余区域水平居中：左界=避让区，右界=右缘 */
+var availL=SAFE+2, availR=W-8, availW2=availR-availL;
+var tx=availL+availW2/2;
+
+/* 整体块垂直居中：固定线高模型（禁止用 measureText 纵向度量，见 07 坑10） */
+var OFFSET=0;
+var timeLH=tf*1.0, dateLH=df*1.0;
+var gap=Math.max(2,Math.round(FS*0.12));  /* 行距≈3px */
+var blockH=timeLH+gap+dateLH;
+var blockTop=(H-blockH)/2+OFFSET;         /* 整体块垂直居中 */
+var ty=timeTop+tf*0.78, dy=dateTop+df*0.80;
+```
+
+- ✋ **禁止画蛇添足**加 `Math.max(SAFE+2, W*0.5)` 这种"右半区"限制——加了内容会偏右，曾返工
+- 微调用 `OFFSET` 常量一处即可；改完问用户实际效果
+- 案例：`美好将至_艺术光语_v3.3_字体26_AOD右居中.zip`（AOD 整体块右侧居中的成品参考）
